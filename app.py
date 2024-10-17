@@ -3,6 +3,9 @@ import pandas as pd
 import torch
 from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report
+import pickle
+import os
 
 # Load the datasets
 def load_data(file_path):
@@ -41,12 +44,17 @@ def train_model(data, text_column, label_column):
     encodings = tokenizer(texts, truncation=True, padding=True, max_length=512)
     dataset = CustomDataset(encodings, labels)
     
+    # Split dataset into train and test
+    train_size = int(0.8 * len(dataset))
+    test_size = len(dataset) - train_size
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+    
     training_args = TrainingArguments(
         output_dir='./results',
+        evaluation_strategy="epoch",
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
         num_train_epochs=3,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        warmup_steps=500,
         weight_decay=0.01,
         logging_dir='./logs',
         logging_steps=10,
@@ -55,11 +63,42 @@ def train_model(data, text_column, label_column):
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
     )
 
     trainer.train()
     
+    # Evaluate the model
+    trainer.evaluate()
+    predictions, labels, _ = trainer.predict(test_dataset)
+    preds = predictions.argmax(axis=1)
+    accuracy = accuracy_score(labels, preds)
+    report = classification_report(labels, preds)
+    
+    # Print accuracy and classification report
+    print(f"Accuracy: {accuracy*100:.2f}%")
+    print(report)
+    
+    return tokenizer, model, label_encoder
+
+# Save the model, tokenizer, and label encoder
+def save_model(tokenizer, model, label_encoder):
+    with open('tokenizer.pkl', 'wb') as f:
+        pickle.dump(tokenizer, f)
+    with open('model.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    with open('label_encoder.pkl', 'wb') as f:
+        pickle.dump(label_encoder, f)
+
+# Load the model, tokenizer, and label encoder
+def load_model():
+    with open('tokenizer.pkl', 'rb') as f:
+        tokenizer = pickle.load(f)
+    with open('model.pkl', 'rb') as f:
+        model = pickle.load(f)
+    with open('label_encoder.pkl', 'rb') as f:
+        label_encoder = pickle.load(f)
     return tokenizer, model, label_encoder
 
 # Predict function
@@ -69,68 +108,60 @@ def predict(text, tokenizer, model, label_encoder):
         outputs = model(**inputs)
         predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
     predicted_label = torch.argmax(predictions, dim=1).item()
-    return label_encoder.inverse_transform([predicted_label])[0], predictions
+    sentiment = "Positive" if label_encoder.inverse_transform([predicted_label])[0] == 1 else "Negative"
+    return sentiment, predictions
 
 # Main function for Streamlit app
 def main():
-    st.title("BERT Text Classification")
+    st.title("BERT Sentiment Classification")
 
-    # Upload dataset
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    # Load dataset
+    file_path = "C:/Users/msi00/OneDrive/Desktop/data.csv"
+    data = load_data(file_path)
     
-    if uploaded_file is not None:
-        try:
-            data = load_data(uploaded_file)
-            st.write("Sample Data:")
-            st.write(data.head())
-            
-            # Display columns for user to select
-            st.write("Columns in the uploaded file:")
-            st.write(data.columns)
-            
-            # User input for text and label columns
-            text_column = st.selectbox("Select the text column", data.columns)
-            label_column = st.selectbox("Select the label column", data.columns)
-        except Exception as e:
-            st.error(f"Error reading the file: {e}")
-            return
-        
-        # Train model and tokenizer
-        if st.button("Train Model"):
-            with st.spinner('Training...'):
+    st.write("Sample Data:")
+    st.write(data.head())
+    
+    # Columns for user to select
+    st.write("Columns in the dataset:")
+    st.write(data.columns)
+    
+    # User input for text and label columns
+    text_column = st.selectbox("Select the text column", data.columns)
+    label_column = st.selectbox("Select the label column", data.columns)
+    
+    # Train model and tokenizer
+    if st.button("Train Model"):
+        with st.spinner('Training...'):
+            try:
+                tokenizer, model, label_encoder = train_model(data, text_column, label_column)
+                # Save model and tokenizer
+                save_model(tokenizer, model, label_encoder)
+                st.success("Model trained and saved successfully!")
+            except Exception as e:
+                st.error(f"Error during training: {e}")
+    
+    st.header("Enter Text for Prediction")
+    user_input = st.text_area("Text Input", height=150, placeholder="Type your text here...")
+    
+    if st.button("Predict"):
+        if user_input.strip():
+            with st.spinner('Predicting...'):
                 try:
-                    tokenizer, model, label_encoder = train_model(data, text_column, label_column)
-                    # Store model and tokenizer in session state
-                    st.session_state.tokenizer = tokenizer
-                    st.session_state.model = model
-                    st.session_state.label_encoder = label_encoder
-                    st.success("Model trained successfully!")
-                except Exception as e:
-                    st.error(f"Error during training: {e}")
-        
-        st.header("Enter Text for Prediction")
-        user_input = st.text_area("Text Input", height=150, placeholder="Type your text here...")
-        
-        if st.button("Predict"):
-            if user_input.strip():
-                with st.spinner('Predicting...'):
-                    try:
-                        # Access the model and tokenizer from session state
-                        tokenizer = st.session_state.tokenizer
-                        model = st.session_state.model
-                        label_encoder = st.session_state.label_encoder
-                        
-                        predicted_label, predictions = predict(user_input, tokenizer, model, label_encoder)
-                        st.write("Predicted Label:")
-                        st.write(predicted_label)
+                    # Load the model and tokenizer
+                    if os.path.exists('tokenizer.pkl') and os.path.exists('model.pkl') and os.path.exists('label_encoder.pkl'):
+                        tokenizer, model, label_encoder = load_model()
+                        sentiment, predictions = predict(user_input, tokenizer, model, label_encoder)
+                        st.write("Predicted Sentiment:")
+                        st.write(sentiment)
                         st.write("Prediction Probabilities:")
                         st.write(predictions.numpy())
-                    except Exception as e:
-                        st.error(f"Error making prediction: {e}")
-            else:
-                st.warning("Please enter some text for prediction.")
-    else:
-        st.info("Please upload a CSV file to proceed.")
+                    else:
+                        st.error("Model and tokenizer not found. Please train the model first.")
+                except Exception as e:
+                    st.error(f"Error making prediction: {e}")
+        else:
+            st.warning("Please enter some text for prediction.")
 
 if __name__ == "__main__":
     main()
