@@ -11,12 +11,6 @@ model = AutoModelForSequenceClassification.from_pretrained(model_name, num_label
 # Load the data from the CSV file  
 df = pd.read_csv("data.csv")
 
-# Ensure the CSV has the required columns
-if 'reviews' not in df.columns or 'reviews_sentiment' not in df.columns:
-    st.error("CSV must contain 'reviews' and 'reviews_sentiment' columns.")
-else:
-    st.write("CSV loaded successfully!")
-
 # Define the sentiment analysis function
 def predict_sentiment(review):
     inputs = tokenizer(review, return_tensors="pt", padding=True, truncation=True)
